@@ -70,3 +70,7 @@ pub use era::{DefaultEraHost, EraArgs, EraSourceArgs};
 
 mod error;
 pub mod types;
+
+/// PerformanceOptimizationArgs struct for configuring performance optimization
+mod performance_optimization;
+pub use performance_optimization::PerformanceOptimizationArgs;

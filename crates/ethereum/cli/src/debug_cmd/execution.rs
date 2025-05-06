@@ -101,6 +101,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
                     stage_conf.clone(),
                     prune_modes,
                     None,
+                    self.env.performance_optimization.skip_state_root_validation,
                 )
                 .set(ExecutionStage::new(
                     executor,

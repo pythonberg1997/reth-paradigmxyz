@@ -1300,7 +1300,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
     }
 
     /// Returns `static_files` directory
-    #[cfg(any(test, feature = "test-utils"))]
+    // #[cfg(any(test, feature = "test-utils"))]
     pub fn path(&self) -> &Path {
         &self.path
     }

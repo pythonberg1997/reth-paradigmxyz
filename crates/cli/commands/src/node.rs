@@ -11,7 +11,7 @@ use reth_node_builder::NodeBuilder;
 use reth_node_core::{
     args::{
         DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, EraArgs, NetworkArgs,
-        PayloadBuilderArgs, PruningArgs, RpcServerArgs, TxPoolArgs,
+        PayloadBuilderArgs, PerformanceOptimizationArgs, PruningArgs, RpcServerArgs, TxPoolArgs,
     },
     node_config::NodeConfig,
     version,
@@ -116,6 +116,10 @@ pub struct NodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs
     /// Additional cli arguments
     #[command(flatten, next_help_heading = "Extension")]
     pub ext: Ext,
+
+    /// All performance optimization related arguments
+    #[command(flatten)]
+    pub performance_optimization: PerformanceOptimizationArgs,
 }
 
 impl<C: ChainSpecParser> NodeCommand<C> {
@@ -168,6 +172,7 @@ where
             ext,
             engine,
             era,
+            performance_optimization,
         } = self;
 
         // set up node config
@@ -187,6 +192,7 @@ where
             pruning,
             engine,
             era,
+            skip_state_root_validation: performance_optimization.skip_state_root_validation,
         };
 
         let data_dir = node_config.datadir();
