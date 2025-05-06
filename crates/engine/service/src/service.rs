@@ -85,6 +85,7 @@ where
         invalid_block_hook: Box<dyn InvalidBlockHook<N::Primitives>>,
         sync_metrics_tx: MetricEventsSender,
         evm_config: C,
+        skip_state_root_validation: bool,
     ) -> Self
     where
         V: EngineValidator<N::Payload, Block = BlockTy<N>>,
@@ -111,7 +112,8 @@ where
             invalid_block_hook,
             engine_kind,
             evm_config,
-        );
+            skip_state_root_validation
+            );
 
         let engine_handler = EngineApiRequestHandler::new(to_tree_tx, from_tree);
         let handler = EngineHandler::new(engine_handler, downloader, incoming_requests);
@@ -192,7 +194,7 @@ mod tests {
                 .unwrap();
         let engine_payload_validator = EthereumEngineValidator::new(chain_spec.clone());
         let (_tx, rx) = watch::channel(FinishedExExHeight::NoExExs);
-        let pruner = Pruner::new_with_factory(provider_factory.clone(), vec![], 0, 0, None, rx);
+        let pruner = Pruner::new_with_factory(provider_factory.clone(), vec![], 0, 0, None, rx, None);
         let evm_config = EthEvmConfig::new(chain_spec.clone());
 
         let (sync_metrics_tx, _sync_metrics_rx) = unbounded_channel();
@@ -213,6 +215,7 @@ mod tests {
             Box::new(NoopInvalidBlockHook::default()),
             sync_metrics_tx,
             evm_config,
+            false,
         );
     }
 }

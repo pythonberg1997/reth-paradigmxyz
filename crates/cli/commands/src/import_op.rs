@@ -72,6 +72,7 @@ pub async fn import_blocks_from_file<N>(
     consensus: Arc<
         impl FullConsensus<N::Primitives, Error = reth_consensus::ConsensusError> + 'static,
     >,
+    skip_state_root_validation: bool,
 ) -> eyre::Result<ImportResult>
 where
     N: ProviderNodeTypes,
@@ -119,6 +120,7 @@ where
             StaticFileProducer::new(provider_factory.clone(), PruneModes::default()),
             import_config.no_state,
             executor.clone(),
+            skip_state_root_validation,
         )?;
 
         // override the tip
@@ -189,6 +191,7 @@ pub fn build_import_pipeline_impl<N, C, E>(
     static_file_producer: StaticFileProducer<ProviderFactory<N>>,
     disable_exec: bool,
     evm_config: E,
+    skip_state_root_validation: bool,
 ) -> eyre::Result<(Pipeline<N>, impl futures::Stream<Item = NodeEvent<N::Primitives>>)>
 where
     N: ProviderNodeTypes,
@@ -242,6 +245,7 @@ where
                 config.stages.clone(),
                 PruneModes::default(),
                 None,
+                skip_state_root_validation,
             )
             .builder()
             .disable_all_if(&StageId::STATE_REQUIRED, || disable_exec),

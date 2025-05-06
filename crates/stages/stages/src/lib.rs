@@ -66,6 +66,7 @@
 //!         StageConfig::default(),
 //!         PruneModes::default(),
 //!         era_import_source,
+//!         false,
 //!     ))
 //!     .build(provider_factory, static_file_producer);
 //! ```

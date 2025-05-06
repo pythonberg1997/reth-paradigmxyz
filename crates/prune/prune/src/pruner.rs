@@ -8,12 +8,21 @@ use alloy_primitives::BlockNumber;
 use reth_exex_types::FinishedExExHeight;
 use reth_provider::{
     DBProvider, DatabaseProviderFactory, PruneCheckpointReader, PruneCheckpointWriter,
+    StageCheckpointReader,
 };
 use reth_prune_types::{PruneProgress, PrunedSegmentInfo, PrunerOutput};
+use reth_static_file_types::{find_fixed_range, StaticFileSegment, DEFAULT_BLOCKS_PER_STATIC_FILE};
+use reth_stages_types::StageId;
 use reth_tokio_util::{EventSender, EventStream};
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 use tokio::sync::watch;
 use tracing::debug;
+
+pub(crate) const RECENT_BLOCKS_KEPT: usize = 302400; // 7 days' blocks
 
 /// Result of [`Pruner::run`] execution.
 pub type PrunerResult = Result<PrunerOutput, PrunerError>;
@@ -43,6 +52,8 @@ pub struct Pruner<Provider, PF> {
     timeout: Option<Duration>,
     /// The finished height of all `ExEx`'s.
     finished_exex_height: watch::Receiver<FinishedExExHeight>,
+    /// The path to the static file.
+    static_file_path: Option<PathBuf>,
     #[doc(hidden)]
     metrics: Metrics,
     event_sender: EventSender<PrunerEvent>,
@@ -56,6 +67,7 @@ impl<Provider> Pruner<Provider, ()> {
         delete_limit: usize,
         timeout: Option<Duration>,
         finished_exex_height: watch::Receiver<FinishedExExHeight>,
+        static_file_path: Option<PathBuf>,
     ) -> Self {
         Self {
             provider_factory: (),
@@ -65,6 +77,7 @@ impl<Provider> Pruner<Provider, ()> {
             delete_limit,
             timeout,
             finished_exex_height,
+            static_file_path,
             metrics: Metrics::default(),
             event_sender: Default::default(),
         }
@@ -83,6 +96,7 @@ where
         delete_limit: usize,
         timeout: Option<Duration>,
         finished_exex_height: watch::Receiver<FinishedExExHeight>,
+        static_file_path: Option<PathBuf>,
     ) -> Self {
         Self {
             provider_factory,
@@ -92,6 +106,7 @@ where
             delete_limit,
             timeout,
             finished_exex_height,
+            static_file_path,
             metrics: Metrics::default(),
             event_sender: Default::default(),
         }
@@ -100,7 +115,7 @@ where
 
 impl<Provider, S> Pruner<Provider, S>
 where
-    Provider: PruneCheckpointReader + PruneCheckpointWriter,
+    Provider: PruneCheckpointReader + PruneCheckpointWriter + StageCheckpointReader,
 {
     /// Listen for events on the pruner.
     pub fn events(&self) -> EventStream<PrunerEvent> {
@@ -141,6 +156,8 @@ where
 
         let (stats, deleted_entries, output) =
             self.prune_segments(provider, tip_block_number, &mut limiter)?;
+
+        self.prune_ancient_blocks(provider, tip_block_number);
 
         self.previous_tip_block_number = Some(tip_block_number);
 
@@ -314,11 +331,149 @@ where
             }
         }
     }
+
+    pub fn prune_ancient_blocks(&self, provider: &Provider, tip_block_number: BlockNumber) 
+    where
+        Provider: StageCheckpointReader,
+    {
+        if RECENT_BLOCKS_KEPT == 0 {
+            return
+        }
+
+        let Some(ref static_file_path) = self.static_file_path else { return };
+
+        let prune_target_block = tip_block_number.saturating_sub(RECENT_BLOCKS_KEPT as u64);
+        if prune_target_block == 0 {
+            return
+        }
+        let mut range_start =
+            find_fixed_range(prune_target_block, DEFAULT_BLOCKS_PER_STATIC_FILE).start();
+        if range_start == 0 {
+            return
+        }
+
+        debug!(
+            target: "pruner",
+            %range_start,
+            %tip_block_number,
+            "Ancient blocks file pruning started",
+        );
+
+        while range_start > DEFAULT_BLOCKS_PER_STATIC_FILE {
+            let range = find_fixed_range(range_start - 1, DEFAULT_BLOCKS_PER_STATIC_FILE);
+            let range_end = range.end();
+
+            if !self.can_prune_static_file_range(provider, range_end) {
+                debug!(
+                    target: "pruner",
+                    range_end = %range_end,
+                    "Skipping static file range - dependent stages not yet completed"
+                );
+                break;
+            }
+
+            for segment in [
+                StaticFileSegment::Headers,
+                StaticFileSegment::Transactions,
+            ] {
+                let path = static_file_path.join(segment.filename(&range));
+
+                if path.exists() {
+                    delete_static_files(&path);
+                } else {
+                    debug!(target: "pruner", path = %path.display(), "Static file not found, skipping");
+                    break
+                }
+            }
+
+            range_start = range.start();
+        }
+
+        debug!(
+            target: "pruner",
+            %tip_block_number,
+            "Ancient blocks file pruning finished",
+        );
+    }
+
+    fn can_prune_static_file_range(&self, provider: &Provider, range_end: BlockNumber) -> bool 
+    where
+        Provider: StageCheckpointReader,
+    {
+        let dependent_stages = [
+            StageId::TransactionLookup,
+            StageId::IndexStorageHistory,
+            StageId::IndexAccountHistory,
+        ];
+
+        for stage_id in dependent_stages {
+            match provider.get_stage_checkpoint(stage_id) {
+                Ok(Some(checkpoint)) => {
+                    if checkpoint.block_number < range_end {
+                        debug!(
+                            target: "pruner",
+                            stage = ?stage_id,
+                            checkpoint_block = %checkpoint.block_number,
+                            range_end = %range_end,
+                            "Stage checkpoint is behind the range we want to prune"
+                        );
+                        return false;
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        target: "pruner",
+                        stage = ?stage_id,
+                        range_end = %range_end,
+                        "Stage has no checkpoint, not safe to prune"
+                    );
+                    return false;
+                }
+                Err(err) => {
+                    debug!(
+                        target: "pruner",
+                        stage = ?stage_id,
+                        range_end = %range_end,
+                        error = %err,
+                        "Failed to read stage checkpoint, not safe to prune"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+}
+
+fn delete_static_files(path: &Path) {
+    // Delete the main file
+    if let Err(err) = fs::remove_file(path) {
+        debug!(target: "pruner", path = %path.display(), %err, "Failed to remove file");
+    } else {
+        debug!(target: "pruner", path = %path.display(), "Removed file");
+    }
+
+    // Delete the .conf file
+    let conf_path = path.with_extension("conf");
+    if let Err(err) = fs::remove_file(&conf_path) {
+        debug!(target: "pruner", path = %conf_path.display(), %err, "Failed to remove .conf file");
+    } else {
+        debug!(target: "pruner", path = %conf_path.display(), "Removed .conf file");
+    }
+
+    // Delete the .off file
+    let off_path = path.with_extension("off");
+    if let Err(err) = fs::remove_file(&off_path) {
+        debug!(target: "pruner", path = %off_path.display(), %err, "Failed to remove .off file");
+    } else {
+        debug!(target: "pruner", path = %off_path.display(), "Removed .off file");
+    }
 }
 
 impl<PF> Pruner<PF::ProviderRW, PF>
 where
-    PF: DatabaseProviderFactory<ProviderRW: PruneCheckpointWriter + PruneCheckpointReader>,
+    PF: DatabaseProviderFactory<ProviderRW: PruneCheckpointWriter + PruneCheckpointReader + StageCheckpointReader>,
 {
     /// Run the pruner. This will only prune data up to the highest finished ExEx height, if there
     /// are no ExExes.
@@ -346,8 +501,15 @@ mod tests {
         let (finished_exex_height_tx, finished_exex_height_rx) =
             tokio::sync::watch::channel(FinishedExExHeight::NoExExs);
 
-        let mut pruner =
-            Pruner::new_with_factory(provider_factory, vec![], 5, 0, None, finished_exex_height_rx);
+        let mut pruner = Pruner::new_with_factory(
+            provider_factory,
+            vec![],
+            5,
+            0,
+            None,
+            finished_exex_height_rx,
+            None,
+        );
 
         // No last pruned block number was set before
         let first_block_number = 1;
