@@ -165,6 +165,7 @@ where
             ctx.components().evm_config().clone(),
             maybe_exex_manager_handle.clone().unwrap_or_else(ExExManagerHandle::empty),
             ctx.era_import_source(),
+            ctx.node_config().skip_state_root_validation,
         )?;
 
         // The new engine writes directly to static files. This ensures that they're up to the tip.
@@ -228,6 +229,7 @@ where
             ctx.invalid_block_hook().await?,
             ctx.sync_metrics_tx(),
             ctx.components().evm_config().clone(),
+            ctx.node_config().skip_state_root_validation,
         );
 
         if ctx.is_dev() {

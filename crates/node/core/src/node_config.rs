@@ -152,6 +152,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// All ERA import related arguments with --era prefix
     pub era: EraArgs,
+
+    /// Disable hashing stages to skip merkle tree building
+    pub skip_state_root_validation: bool,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -182,6 +185,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             datadir: DatadirArgs::default(),
             engine: EngineArgs::default(),
             era: EraArgs::default(),
+            skip_state_root_validation: false,
         }
     }
 
@@ -488,6 +492,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             pruning: self.pruning,
             engine: self.engine,
             era: self.era,
+            skip_state_root_validation: self.skip_state_root_validation,
         }
     }
 }
@@ -516,6 +521,7 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             datadir: self.datadir.clone(),
             engine: self.engine.clone(),
             era: self.era.clone(),
+            skip_state_root_validation: self.skip_state_root_validation.clone(),
         }
     }
 }

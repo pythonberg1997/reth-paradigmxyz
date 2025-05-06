@@ -279,6 +279,8 @@ where
     precompile_cache_map: PrecompileCacheMap<SpecFor<C>>,
     /// Metrics for precompile cache, stored per address to avoid re-allocation.
     precompile_cache_metrics: HashMap<Address, CachedPrecompileMetrics>,
+    /// Flag indicating whether the state root validation should be skipped.
+    skip_state_root_validation: bool,
 }
 
 impl<N, P: Debug, T: PayloadTypes + Debug, V: Debug, C> std::fmt::Debug
@@ -305,6 +307,7 @@ where
             .field("engine_kind", &self.engine_kind)
             .field("payload_processor", &self.payload_processor)
             .field("evm_config", &self.evm_config)
+            .field("skip_state_root_validation", &self.skip_state_root_validation)
             .finish()
     }
 }
@@ -341,6 +344,7 @@ where
         config: TreeConfig,
         engine_kind: EngineApiKind,
         evm_config: C,
+        skip_state_root_validation: bool,
     ) -> Self {
         let (incoming_tx, incoming) = std::sync::mpsc::channel();
 
@@ -374,6 +378,7 @@ where
             evm_config,
             precompile_cache_map,
             precompile_cache_metrics: HashMap::new(),
+            skip_state_root_validation,
         }
     }
 
@@ -399,6 +404,7 @@ where
         invalid_block_hook: Box<dyn InvalidBlockHook<N>>,
         kind: EngineApiKind,
         evm_config: C,
+        skip_state_root_validation: bool,
     ) -> (Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>, UnboundedReceiver<EngineApiEvent<N>>)
     {
         let best_block_number = provider.best_block_number().unwrap_or(0);
@@ -430,6 +436,7 @@ where
             config,
             kind,
             evm_config,
+            skip_state_root_validation,
         );
         task.set_invalid_block_hook(invalid_block_hook);
         let incoming = task.incoming_tx.clone();
@@ -2280,6 +2287,7 @@ where
         }
 
         let hashed_state = self.provider.hashed_post_state(&output.state);
+        let mut trie_output: TrieUpdates = TrieUpdates::default();
 
         if let Err(err) = self
             .payload_validator
@@ -2291,70 +2299,72 @@ where
         }
 
         debug!(target: "engine::tree", block=?block_num_hash, "Calculating block state root");
+        if !self.skip_state_root_validation {
+            let root_time = Instant::now();
 
-        let root_time = Instant::now();
+            let mut maybe_state_root = None;
 
-        let mut maybe_state_root = None;
-
-        if run_parallel_state_root {
-            // if we new payload extends the current canonical change we attempt to use the
-            // background task or try to compute it in parallel
-            if use_state_root_task {
+            if run_parallel_state_root {
+                // if we new payload extends the current canonical change we attempt to use the
+                // background task or try to compute it in parallel
+                if use_state_root_task {
                 debug!(target: "engine::tree", block=?block_num_hash, "Using sparse trie state root algorithm");
-                match handle.state_root() {
-                    Ok(StateRootComputeOutcome { state_root, trie_updates, trie }) => {
-                        let elapsed = execution_finish.elapsed();
-                        info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
-                        // we double check the state root here for good measure
-                        if state_root == block.header().state_root() {
-                            maybe_state_root = Some((state_root, trie_updates, elapsed))
-                        } else {
-                            warn!(
-                                target: "engine::tree",
-                                ?state_root,
-                                block_state_root = ?block.header().state_root(),
-                                "State root task returned incorrect state root"
-                            );
-                        }
+                    match handle.state_root() {
+                        Ok(StateRootComputeOutcome { state_root, trie_updates, trie }) => {
+                            let elapsed = execution_finish.elapsed();
+                            info!(target: "engine::tree", ?state_root, ?elapsed, "State root task finished");
+                            // we double check the state root here for good measure
+                            if state_root == block.header().state_root() {
+                                maybe_state_root = Some((state_root, trie_updates, elapsed))
+                            } else {
+                                warn!(
+                                    target: "engine::tree",
+                                    ?state_root,
+                                    block_state_root = ?block.header().state_root(),
+                                    "State root task returned incorrect state root"
+                                );
+                            }
 
                         // hold on to the sparse trie for the next payload
                         self.payload_processor.set_sparse_trie(trie);
+                        }
+                        Err(error) => {
+                            debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
+                        }
                     }
-                    Err(error) => {
-                        debug!(target: "engine::tree", %error, "Background parallel state root computation failed");
-                    }
-                }
-            } else {
+                } else {
                 debug!(target: "engine::tree", block=?block_num_hash, "Using parallel state root algorithm");
-                match self.compute_state_root_parallel(
-                    persisting_kind,
-                    block.header().parent_hash(),
-                    &hashed_state,
-                ) {
-                    Ok(result) => {
-                        info!(
-                            target: "engine::tree",
-                            block = ?block_num_hash,
-                            regular_state_root = ?result.0,
-                            "Regular root task finished"
-                        );
-                        maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
+                    match self.compute_state_root_parallel(
+                        persisting_kind,
+                        block.header().parent_hash(),
+                        &hashed_state,
+                    ) {
+                        Ok(result) => {
+                            info!(
+                                target: "engine::tree",
+                                block = ?block_num_hash,
+                                regular_state_root = ?result.0,
+                                "Regular root task finished"
+                            );
+                            maybe_state_root = Some((result.0, result.1, root_time.elapsed()));
+                        }
+                        Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(
+                            error,
+                        ))) => {
+                            debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
+                        }
+                        Err(error) => return Err((InsertBlockErrorKind::Other(Box::new(error)), block)),
                     }
-                    Err(ParallelStateRootError::Provider(ProviderError::ConsistentView(error))) => {
-                        debug!(target: "engine::tree", %error, "Parallel state root computation failed consistency check, falling back");
-                    }
-                    Err(error) => return Err((InsertBlockErrorKind::Other(Box::new(error)), block)),
                 }
             }
-        }
 
-        let (state_root, trie_output, root_elapsed) = if let Some(maybe_state_root) =
-            maybe_state_root
-        {
-            maybe_state_root
-        } else {
-            // fallback is to compute the state root regularly in sync
-            if self.config.state_root_fallback() {
+            let (state_root, _trie_output, root_elapsed) = if let Some(maybe_state_root) =
+                maybe_state_root
+            {
+                maybe_state_root
+            } else {
+                // fallback is to compute the state root regularly in sync
+                if self.config.state_root_fallback() {
                 debug!(target: "engine::tree", block=?block_num_hash, "Using state root fallback for testing");
             } else {
                 warn!(target: "engine::tree", block=?block_num_hash, ?persisting_kind, "Failed to compute state root in parallel");
@@ -2363,17 +2373,25 @@ where
 
             let (root, updates) =
                 ensure_ok!(state_provider.state_root_with_updates(hashed_state.clone()));
-            (root, updates, root_time.elapsed())
-        };
+                (root, updates, root_time.elapsed())
+            };
+            trie_output = _trie_output;
 
-        self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
-        debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
+            self.metrics
+                .block_validation
+                .record_state_root(&trie_output, root_elapsed.as_secs_f64());
+            debug!(target: "engine::tree", ?root_elapsed, block=?block_num_hash, "Calculated state root");
 
-        // ensure state root matches
-        if state_root != block.header().state_root() {
-            // call post-block hook
-            self.on_invalid_block(&parent_block, &block, &output, Some((&trie_output, state_root)));
-            return Err((
+            // ensure state root matches
+            if state_root != block.header().state_root() {
+                // call post-block hook
+                self.on_invalid_block(
+                    &parent_block,
+                    &block,
+                    &output,
+                    Some((&trie_output, state_root)),
+                );
+                return Err((
                 ConsensusError::BodyStateRootDiff(
                     GotExpected { got: state_root, expected: block.header().state_root() }.into(),
                 )
@@ -2382,8 +2400,9 @@ where
             ))
         }
 
-        // terminate prewarming task with good state output
-        handle.terminate_caching(Some(output.state.clone()));
+            // terminate prewarming task with good state output
+            handle.terminate_caching(Some(output.state.clone()));
+        }
 
         let is_fork = ensure_ok!(self.is_fork(block.sealed_header()));
 

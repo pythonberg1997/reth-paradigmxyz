@@ -142,6 +142,7 @@ pub async fn setup_engine_with_chain_import(
             &config,
             evm_config,
             Arc::new(consensus),
+            false,
         )
         .await?;
 
@@ -339,6 +340,7 @@ mod tests {
                 &config,
                 evm_config,
                 Arc::new(consensus),
+                false,
             )
             .await
             .unwrap();
@@ -489,6 +491,7 @@ mod tests {
             &config,
             evm_config,
             Arc::new(consensus),
+            false,
         )
         .await
         .unwrap();

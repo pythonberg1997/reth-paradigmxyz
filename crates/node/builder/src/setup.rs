@@ -42,6 +42,7 @@ pub fn build_networked_pipeline<N, Client, Evm>(
     evm_config: Evm,
     exex_manager_handle: ExExManagerHandle<N::Primitives>,
     era_import_source: Option<EraImportSource>,
+    skip_state_root_validation: bool,
 ) -> eyre::Result<Pipeline<N>>
 where
     N: ProviderNodeTypes,
@@ -70,6 +71,7 @@ where
         evm_config,
         exex_manager_handle,
         era_import_source,
+        skip_state_root_validation,
     )?;
 
     Ok(pipeline)
@@ -90,6 +92,7 @@ pub fn build_pipeline<N, H, B, Evm>(
     evm_config: Evm,
     exex_manager_handle: ExExManagerHandle<N::Primitives>,
     era_import_source: Option<EraImportSource>,
+    skip_state_root_validation: bool,
 ) -> eyre::Result<Pipeline<N>>
 where
     N: ProviderNodeTypes,
@@ -122,6 +125,7 @@ where
                 stage_config.clone(),
                 prune_modes,
                 era_import_source,
+                skip_state_root_validation,
             )
             .set(ExecutionStage::new(
                 evm_config,

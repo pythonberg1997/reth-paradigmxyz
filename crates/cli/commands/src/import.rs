@@ -62,6 +62,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> ImportComm
             &config,
             executor,
             consensus,
+            self.env.performance_optimization.skip_state_root_validation,
         )
         .await?;
 
