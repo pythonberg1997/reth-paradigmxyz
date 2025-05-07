@@ -20,7 +20,7 @@ use std::{
 use tokio::sync::watch;
 use tracing::debug;
 
-pub const RECENT_BLOCKS_KEPT: usize = 1000;
+pub(crate) const RECENT_BLOCKS_KEPT: usize = 1000;
 
 /// Result of [`Pruner::run`] execution.
 pub type PrunerResult = Result<PrunerOutput, PrunerError>;
