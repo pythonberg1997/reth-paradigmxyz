@@ -155,6 +155,8 @@ where
         let (stats, deleted_entries, output) =
             self.prune_segments(provider, tip_block_number, &mut limiter)?;
 
+        self.prune_ancient_blocks(provider, tip_block_number);
+
         self.previous_tip_block_number = Some(tip_block_number);
 
         let elapsed = start.elapsed();
