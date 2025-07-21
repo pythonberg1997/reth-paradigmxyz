@@ -781,7 +781,7 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
                 continue
             }
 
-            if has_receipt_pruning && segment.is_receipts() {
+            if segment.is_receipts() {
                 // Pruned nodes (including full node) do not store receipts as static files.
                 continue
             }
